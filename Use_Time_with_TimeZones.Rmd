@@ -1,0 +1,59 @@
+---
+title: "tbd"
+author: "Philipp B."
+date: "13 6 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_chunk$set(fig.path = "figure/fig-")
+
+Sys.setlocale(category = "LC_ALL", locale = "english")
+```
+
+# Synopsis
+1. Across the United States, which types of events (as indicated in the <p style="color:red">EVTYPE</p> variable) are most harmful with respect to population health?
+1. Across the United States, which types of events have the greatest economic consequences?
+
+# Data Processing
+
+packages
+```{r, results='hide', message=FALSE}
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r, cache=TRUE}
+if (!file.exists("repdata_data_StormData.csv.bz2")) {
+    download.file(url = "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
+                  destfile = "repdata_data_StormData.csv.bz2")
+}
+noaa <- as_tibble(read.csv("repdata_data_StormData.csv.bz2"))
+```
+
+To do:
+- convert BGN_DATE and BGN_TIME, END_DATE and END_TIME to date/time using time zones
+- check documentation on BGN_TIME
+- county, state, end_county and evtype as factor
+
+test_dt2 <- mdy_hm(paste(gsub(" 0:00:00", "", noaa$BGN_DATE), noaa$BGN_TIME, sep = " "))
+test_dt3 <- mdy_hms(noaa$BGN_DATE)
+test_dt4 <- mdy_hms(paste(sub(" 0:00:00", "", noaa$BGN_DATE), na.omit(noaa$BGN_TIME), sep = " "))
+
+Test:
+noaa[match(unique(noaa$TIME_ZONE), noaa$TIME_ZONE), c("BGN_DATE", "BGN_TIME", "TIME_ZONE", "BGN_DT")]
+
+```{r parsing date}
+noaa <- noaa %>% 
+    mutate(BGN_DT = if_else(grepl("(PM|AM)", BGN_TIME, ignore.case = T), 
+                           mdy_hms(paste(sub(" 0:00:00", "", BGN_DATE), noaa$BGN_TIME, sep = " "), quiet = T),
+                           mdy_hm(paste(sub(" 0:00:00", "", BGN_DATE), noaa$BGN_TIME, sep = " "), quiet = T))) %>% rowwise %>%
+    mutate(BGN_DTTZ = if_else(grepl("(PM|AM)", BGN_TIME, ignore.case = T), 
+                           mdy_hms(paste(sub(" 0:00:00", "", BGN_DATE), noaa$BGN_TIME, sep = " "), tz = TIME_ZONE, quiet = T),
+                           mdy_hm(paste(sub(" 0:00:00", "", BGN_DATE), noaa$BGN_TIME, sep = " "), tz = TIME_ZONE, quiet = T)))
+```
+
+# Results

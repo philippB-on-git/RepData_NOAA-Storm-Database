@@ -1,0 +1,254 @@
+---
+title: "Impact of weather events on health and economics in the USA"
+author: "Philipp B."
+date: "2020-06-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_chunk$set(fig.path = "figure/fig-")
+
+Sys.setlocale(category = "LC_ALL", locale = "english")
+```
+
+# Synopsis
+In this analysis, [data]("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2") from U.S. National Oceanic and Atmospheric Administration's (NOAA) is used to investigate the impact of weather events on both public health and economic consequences. The data is cleaned up by resolving the exponents of both property and crop damage to numeric values. These are then used together with the corresponding mantissa values to calculate the damage on property and crop. Then, the labeling of the weather events is cleaned by matching the raw values with the 48 official destinct values according to the [dataset documentation]("https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf") using a text search with a distance matrix. An additional weather event category is introduced called "others" to group together all weather events that could not be matched with the official distinct values. This group accounts for around 10% of impact on crop damage (less for property damage, fatalities and injuries). Using the resulting clean data it was found that **TORNADO** is the most harmful weather event with respect to population health in the U.S. while **FLOOD** has the greates economic consequences.
+
+----------
+  
+    
+# Data Processing
+  
+For this analysis the following R packages are used:
+```{r, results='hide', message=FALSE}
+library(dplyr)
+library(stringdist)
+library(ggplot2)
+library(scales)
+library(tidyr)
+library(gridExtra)
+```
+
+Raw data is derived from the storm data base of U.S. National Oceanic and Atmospheric Administration's (NOAA), which is downloaded from [this mirror]("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"). Detailed information on the raw data can be found in the [Storm Data Documentation]("https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf") as well as in the [Storm Events FAQ](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf) of the National Climatic Data Center. For this analysis the complete data is taken into account comprising storm events from 1950 until November 2011.
+
+#### Loading and selecting data
+```{r, cache=TRUE}
+if (!file.exists("repdata_data_StormData.csv.bz2")) {
+    download.file(url = "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
+                  destfile = "repdata_data_StormData.csv.bz2")
+}
+noaa <- as_tibble(read.csv("repdata_data_StormData.csv.bz2", stringsAsFactors = F))
+```
+
+
+First, only the variables of interest are selected. These are  
+  
+* **EVTYPE** indicating the type of the weather event  
+* **FATALITIES** being the number of fatalities caused by a given weather event  
+* **INJURIES** being the number of injuries caused by a given weather event  
+* **PROPDMG** being the mantissa of damage to property caused by a given weather event  
+* **PROPDMGEXP** being the exponent corresponding to *PROPDMG*  
+* **CROPDMG** being the mantissa of damage to crop caused by a given weather event  
+* **CROPDMGEXP** being the exponent corresponding to *CROPDMG*  
+  
+
+```{r select_variables, cache=TRUE}
+noaa <- noaa %>% 
+    select(EVTYPE, FATALITIES, INJURIES, PROPDMG, PROPDMGEXP, CROPDMG, CROPDMGEXP)
+str(noaa)
+table(noaa$PROPDMGEXP)
+table(noaa$CROPDMGEXP)
+```
+  
+  
+#### Cleaning exponents, property damage and crop damage
+
+From the structure of the resulting dataset we learn that both *PROPDMGEXP* and *CROPDMGEXP* are classified as character variable. The two tables above show that both exponents exhibit slight inconsitencies that need to be resolved before continuing with the analysis. Using the learnings from the in-depth analyis [here](https://rstudio-pubs-static.s3.amazonaws.com/58957_37b6723ee52b455990e149edde45e5b6.html) inspired by David Hood, the following function *cleanExponent* is defined to return the correct exponents.
+
+```{r cleaning_exponent}
+cleanExponent <- function(x) {
+    vapply(X = toupper(x), USE.NAMES = F, FUN.VALUE = numeric(1), FUN = function(y) {
+        if (is.numeric(y)) {
+            return(1)
+        } else if (y == "H") {
+            return(2)
+        } else if (y == "K") {
+            return(3)
+        } else if (y == "M") {
+            return(6)
+        } else if (y == "B") {
+            return(9)
+        } else {
+            return(0)
+        }
+    })
+}
+```
+
+With the function *cleanExponent* both the property damage (*prop.dmg*) and the crop damage (*crop.dmg*) are derived.
+
+```{r calc_values, cache=TRUE}
+noaa <- noaa %>% mutate(prop.dmg = PROPDMG * 10 ^ cleanExponent(PROPDMGEXP),
+                        crop.dmg = CROPDMG * 10 ^ cleanExponent(CROPDMGEXP))
+
+evtypes.raw <- unique(noaa$EVTYPE)
+length(evtypes.raw)
+```
+  
+  
+#### Cleaning event types
+We see that the raw data of *EVTYPES* consists of `r format(length(evtypes.raw))` values while only 48 distinct events are specified in the table in the [documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf). Using the table on page 6 of the documentation, the following lookup table is created.
+
+```{r evtype_lookup}
+evtype.lookup <- c("Astronomical Low Tide", "Avalanche", "Blizzard", "Coastal Flood", 
+                   "Cold/Wind Chill", "Debris Flow", "Dense Fog", "Dense Smoke", "Drought",
+                   "Dust Devil", "Dust Storm", "Excessive Heat", "Extreme Cold/Wind Chill", 
+                   "Flash Flood", "Flood", "Frost/Freeze", "Funnel Cloud", "Freezing Fog", 
+                   "Hail", "Heat", "Heavy Rain", "Heavy Snow", "High Surf", "High Wind", 
+                   "Hurricane (Typhoon)", "Ice Storm", "Lake-Effect Snow", "Lakeshore Flood", 
+                   "Lightning", "Marine Hail", "Marine High Wind", "Marine Strong Wind", 
+                   "Marine Thunderstorm Wind", "Rip Current", "Seiche", "Sleet", "Storm Surge/Tide",
+                   "Strong Wind", "Thunderstorm Wind", "Tornado", "Tropical Depression", 
+                   "Tropical Storm", "Tsunami", "Volcanic Ash", "Waterspout", "Wildfire", 
+                   "Winter Storm", "Winter Weather")
+evtype.lookup <- toupper(evtype.lookup)
+evtype.lookup
+```
+
+This table is used to compare the actual *EVTYPE* values in the datset. With the **amatch** function the closest match is found with a maximal matrix distance of 5. Items that do not match using the given criteria are labled *NA*.
+
+```{r evtype_cleanup, cache=TRUE}
+noaa <- noaa %>% 
+    mutate(EVTYPE = sub("^( )+", "", EVTYPE)) %>%
+    mutate(EVTYPE.clean = evtype.lookup[amatch(toupper(EVTYPE), evtype.lookup, maxDist = 5)])
+
+unique(noaa$EVTYPE.clean)
+```
+
+In the resulting *EVTYPE.clean* we see *NA* values. This is caused by either a to strong difference to the official distinct events or by a combination of several events merged into one case. The occurence of those non-matching events is investigated in the following:
+  
+```{r evtype_cleanup2}
+no.match <- is.na(noaa$EVTYPE.clean)
+cbind(total.no.match = sum(no.match), fraction.no.match = mean(no.match))
+
+rel.no.match <- with(noaa, is.na(EVTYPE.clean) & (crop.dmg > 0 | prop.dmg > 0 | FATALITIES > 0 | INJURIES > 0))
+cbind(total.rel.no.match = sum(rel.no.match), fraction.rel.no.match = mean(rel.no.match))
+```
+  
+As seen above around 1.3 % of all cases have missing values in the newly derived *EVTYPE.clean*. Hence the overwhelmingly majority of the raw events have been matched with the official events. Looking at only those cases that report non-zero values in either crop damage, property damage, injuries or fatalities, we find that less than one percent cases with non-matched event type remain.  
+
+Next, the impact of those ~0.3 % cases with missing *EVTYPE.clean* on the overall damage on economics and health is investigated:
+  
+```{r evtype_cleanup3}
+evtype.others <- noaa %>% 
+    group_by(no.match = is.na(EVTYPE.clean)) %>% 
+    summarize(crop.dmg = sum(crop.dmg), prop.dmg = sum(prop.dmg), 
+              fatalities = sum(FATALITIES), injuries = sum(INJURIES))
+evtype.others[evtype.others$no.match == T, -1] / apply(evtype.others[, -1], 2, sum)
+```
+  
+Given that the non-matched events account for around 10 percent (in most cases around five percent) of the total impact, it is reasonable to group those non-matched events into a rest group called *others*.
+  
+```{r evtype_cleanup4}
+noaa <- noaa %>% 
+    filter(prop.dmg > 0 | crop.dmg > 0 | FATALITIES > 0 | INJURIES > 0) %>%
+    mutate(EVTYPE.clean = as.factor(if_else(is.na(EVTYPE.clean), "others", EVTYPE.clean)))
+```
+  
+#### Summarizing and aggregating the data
+   
+To proceed with the analysis, the data is summarized by summing up all impacts (*prop.dmg*, *crop.dmg*, *injuries*, *fatalities*) for each event type (*EVTYPE.clean*). The summary table is then stacked using the *gather* function to allow for a stacked bargraph later on.
+  
+```{r summarizing_data}
+noaa.summary <- noaa %>% 
+    group_by(EVTYPE.clean) %>% 
+    summarize(total.prop.dmg = sum(prop.dmg), total.crop.dmg = sum(crop.dmg), 
+              total.injuries = sum(INJURIES), total.fatalities = sum(FATALITIES)) %>%
+    mutate(injuries.fatalities = total.injuries + total.fatalities,
+           prop.crop = total.crop.dmg + total.prop.dmg)
+
+summary.stacked <- noaa.summary %>%
+    gather(total.prop.dmg, total.crop.dmg,total.injuries, total.fatalities, 
+           key = "category", value = "impact")
+```
+  
+Finally, both *health* and *econ* are created which are ordered by the total impact on health (*fatalities* + *injuries*) and economy (*crop.dmg* + *prop.dmg*) respectively:
+  
+```{r preparing_plot_data}
+health <- summary.stacked %>% 
+    filter(EVTYPE.clean %in% top_n(noaa.summary, 10, injuries.fatalities)$EVTYPE.clean &
+               grepl("(injuries|fatalities)", summary.stacked$category)) %>%
+    arrange(desc(injuries.fatalities))
+
+
+econ <- summary.stacked %>% 
+    filter(EVTYPE.clean %in% top_n(noaa.summary, 10, prop.crop)$EVTYPE.clean &
+               grepl("(prop|crop)", summary.stacked$category)) %>%
+    arrange(desc(prop.crop))
+```
+  
+  
+# Results
+  
+### Impact on public health
+  
+```{r q1_plots, fig.align="center", fig.width=10}
+g1 <- ggplot(data = top_n(x = noaa.summary, n = 10, wt = total.fatalities), 
+             mapping = aes(x = reorder(EVTYPE.clean, total.fatalities), y = total.fatalities)) +
+    geom_bar(stat = "identity", fill = hue_pal()(2)[1]) + 
+    labs(y = "total fatalities", x = "", 
+         title = "Fatalities", subtitle = "top ten event types") + 
+    theme(plot.margin = unit(c(5.5,5.5,5.5,30), "pt")) +
+    coord_flip()
+
+g2 <- ggplot(data = top_n(x = noaa.summary, n = 10, wt = total.injuries), 
+             mapping = aes(x = reorder(EVTYPE.clean, total.injuries), y = total.injuries)) +
+    geom_bar(stat = "identity", fill = hue_pal()(2)[2]) + 
+    labs(y = "total injuries", x = "", 
+         title = "Injuries", subtitle = "top ten event types") + 
+    coord_flip()
+
+g3 <- ggplot(data = health, 
+             mapping = aes(x = reorder(EVTYPE.clean, -injuries.fatalities), 
+                           y = impact, fill = category)) + 
+    geom_bar(stat = "identity") +
+    labs(x = "", y = "count", 
+         title = "Injuries & Fatalities", subtitle = "top 10 impact on health") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+grid.arrange(g3, grid.arrange(g1,g2, nrow = 2), ncol = 2)
+```
+  
+Looking at the impact of the weather events on health, *TORNADO* is by far the most severe impact causing both most fatalities and most injuries. *HIGH WIND* and *FLOOD* join *TORNADO* to form the top 3 events being the most harmful regarding public health tightly followed by *EXESSIVE HEAT*. 
+
+### Impact on economy
+  
+```{r q2_plots, fig.align="center", fig.width=10}
+g4 <- ggplot(data = top_n(x = noaa.summary, n = 10, wt = total.prop.dmg), 
+             mapping = aes(x = reorder(EVTYPE.clean, total.prop.dmg), y = total.prop.dmg)) +
+    geom_bar(stat = "identity", fill = hue_pal()(2)[2]) + 
+    labs(y = "total [$]", x = "", 
+         title = "Property Damage", subtitle = "top ten event types") + 
+    coord_flip()
+
+g5 <- ggplot(data = top_n(x = noaa.summary, n = 10, wt = total.crop.dmg), 
+             mapping = aes(x = reorder(EVTYPE.clean, total.crop.dmg), y = total.crop.dmg)) +
+    geom_bar(stat = "identity", fill = hue_pal()(2)[1]) + 
+    labs(y = "total [$]", x = "", 
+         title = "Crop Damage", subtitle = "top ten event types") + 
+    coord_flip()
+
+g6 <- ggplot(data = econ, 
+             mapping = aes(x = reorder(EVTYPE.clean, -prop.crop), 
+                           y = impact, fill = category)) + 
+    geom_bar(stat = "identity") +
+    labs(x = "", y = "total [$]", 
+         title = "Property & Crop Damage", subtitle = "top 10 impact on economy") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+grid.arrange(g6, grid.arrange(g5,g4, nrow = 2), ncol = 2)
+```
+
+While *DROUGHT* has the strongest impact on crop damage, *FLOOD* has the most severe consequences regarding property damage. Furthermore *DROUGHT* appears to have only major consequences on crop damage as it is not among the top 10 events causing property damage. Also there is to be noted that property damage prevails crop damage. Hence, property damage dominates the impact on economy caused by weather events. *FLOOD* has the greatest economic consequences followed by *HURRICANE (TYPHOON)* and *TORNADO* as seen on the left side in the figure above, where property damage and crop damage are added to give the overall picture. The previously defined group *others* comes in at rank five which is not surprising as various non-matching events were grouped together. 
